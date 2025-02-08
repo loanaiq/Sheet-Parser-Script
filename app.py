@@ -153,13 +153,15 @@ def convert_int64_to_int(obj):
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
-        return float(obj)
+        return round(float(obj), 2)
     elif isinstance(obj, np.ndarray):
-        return obj.tolist()
+        return [round(float(x), 2) if isinstance(x, (np.floating, float)) else x for x in obj.tolist()]
     elif isinstance(obj, pd.Series):
-        return obj.apply(lambda x: convert_int64_to_int(x) if isinstance(x, (np.number, pd.Series)) else x).tolist()
+        return obj.apply(lambda x: round(float(x), 2) if isinstance(x, (np.floating, float)) else 
+                       convert_int64_to_int(x) if isinstance(x, (np.number, pd.Series)) else x).tolist()
     elif isinstance(obj, pd.DataFrame):
-        return obj.applymap(lambda x: convert_int64_to_int(x) if isinstance(x, np.number) else x).to_dict(orient="records")
+        return obj.applymap(lambda x: round(float(x), 2) if isinstance(x, (np.floating, float)) else 
+                          convert_int64_to_int(x) if isinstance(x, np.number) else x).to_dict(orient="records")
     elif isinstance(obj, dict):
         return {key: convert_int64_to_int(value) for key, value in obj.items()}
     elif isinstance(obj, list):
@@ -217,12 +219,39 @@ def extract_json_from_sheet(
 
 def parse(file_path):
     """Main function to parse the workbook and extract JSON data."""
-    target_keywords = ["Balance Sheet", "Profit & Loss", "Ratios"]
+    target_keywords = ["Balance Sheet", "Profit & Loss", "Ratios", "Profile"]
     matching_sheets = find_relevant_sheets(file_path, target_keywords)
 
     if not matching_sheets:
         print("No relevant sheets found.")
         return None
+
+    json_data = {}
+
+    # Add profile data first if available
+    if "Profile" in matching_sheets:
+        try:
+            profile_sheet = pd.read_excel(file_path, sheet_name=matching_sheets["Profile"], header=None)
+            
+            # Find the row index containing "ABOUT THE COMPANY"
+            mask = profile_sheet.iloc[:, 0].astype(str).str.contains("ABOUT THE COMPANY", case=False, na=False)
+            header_idx = profile_sheet[mask].index
+            
+            if not header_idx.empty:
+                # Get the content from the next row
+                content_row = profile_sheet.iloc[header_idx[0] + 1]
+                # Get the first non-empty cell from this row
+                about_content = next((str(cell) for cell in content_row if pd.notna(cell) and str(cell).strip() != "" and str(cell).lower() != "nan"), None)
+                
+                if about_content:
+                    json_data["metadata"] = {"about_company": about_content.strip()}
+                else:
+                    json_data["metadata"] = {"about_company": None}
+            else:
+                json_data["metadata"] = {"about_company": None}
+        except Exception as e:
+            print(f"Warning: Error processing Profile sheet: {str(e)}")
+            json_data["metadata"] = {"about_company": None}
 
     balance_sheet_structure = {
         "SHAREHOLDERS FUND": [
@@ -294,7 +323,7 @@ def parse(file_path):
         ]
     }
 
-    json_data = {}
+    # Process other sheets as before
     for sheet, sheet_number in matching_sheets.items():
         if sheet == "Balance Sheet":
             json_data["balance_sheet"] = extract_json_from_sheet(file_path, sheet_number, balance_sheet_structure)
